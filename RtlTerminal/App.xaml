@@ -1,0 +1,15 @@
+<Application x:Class="RtlTerminal.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             StartupUri="MainWindow.xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <SolidColorBrush x:Key="TerminalBackground" Color="#FF0C0C0C"/>
+            <SolidColorBrush x:Key="TerminalForeground" Color="#FFE8E8E8"/>
+            <SolidColorBrush x:Key="TabBarBackground" Color="#FF1E1E1E"/>
+            <SolidColorBrush x:Key="TabActiveBackground" Color="#FF2D2D2D"/>
+            <SolidColorBrush x:Key="TabInactiveBackground" Color="#FF181818"/>
+            <SolidColorBrush x:Key="TabBorder" Color="#FF333333"/>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

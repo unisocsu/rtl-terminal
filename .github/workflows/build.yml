@@ -1,0 +1,43 @@
+name: Build RTL Terminal
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore RtlTerminal/RtlTerminal.csproj
+
+      - name: Build
+        run: dotnet build RtlTerminal/RtlTerminal.csproj -c Release --no-restore
+
+      - name: Publish (self-contained single exe)
+        run: >
+          dotnet publish RtlTerminal/RtlTerminal.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -o publish
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RtlTerminal-win-x64
+          path: publish/**
