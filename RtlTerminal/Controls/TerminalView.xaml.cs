@@ -160,15 +160,19 @@ namespace RtlTerminal.Controls
                     return;
 
                 case Key.Back when Keyboard.Modifiers == ModifierKeys.Control:
-                    // Ctrl+Backspace = delete word left. Most readline-style input (bash, PowerShell
-                    // PSReadLine, Node's readline used by CLIs like Claude Code) maps this to
-                    // ESC + DEL (Alt+Backspace in xterm terms), NOT a second plain DEL.
-                    _tab.Session.Write("\u001b\x7f");
+                    // Ctrl+Backspace = delete word left. Ctrl+W (0x17) is the standard single-byte
+                    // "unix-word-rubout" binding recognized by bash, zsh, PSReadLine and Node's
+                    // readline (which Claude Code uses) - more consistently supported than an
+                    // ESC+DEL combo.
+                    _tab.Session.Write("\x17");
                     e.Handled = true;
                     return;
 
                 case Key.Back:
-                    _tab.Session.Write("\x7f"); // DEL - most shells treat this as backspace under ConPTY
+                    // BS (0x08), not DEL (0x7f): cmd.exe / conhost's native line editor expects the
+                    // Windows-native backspace byte. DEL is the Unix/xterm convention and was simply
+                    // not recognized as "erase" here - same root cause as the Space bug.
+                    _tab.Session.Write("\b");
                     e.Handled = true;
                     return;
 

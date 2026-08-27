@@ -11,6 +11,7 @@
         <RichTextBox x:Name="OutputBox"
                      Background="Transparent"
                      Foreground="{StaticResource TerminalForeground}"
+                     CaretBrush="{StaticResource TerminalForeground}"
                      BorderThickness="0"
                      FontFamily="Cascadia Mono, Consolas, Courier New"
                      FontSize="14"
