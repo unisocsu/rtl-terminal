@@ -159,8 +159,25 @@ namespace RtlTerminal.Controls
                     e.Handled = true;
                     return;
 
+                case Key.Back when Keyboard.Modifiers == ModifierKeys.Control:
+                    // Ctrl+Backspace = delete word left. Most readline-style input (bash, PowerShell
+                    // PSReadLine, Node's readline used by CLIs like Claude Code) maps this to
+                    // ESC + DEL (Alt+Backspace in xterm terms), NOT a second plain DEL.
+                    _tab.Session.Write("\u001b\x7f");
+                    e.Handled = true;
+                    return;
+
                 case Key.Back:
                     _tab.Session.Write("\x7f"); // DEL - most shells treat this as backspace under ConPTY
+                    e.Handled = true;
+                    return;
+
+                case Key.Space:
+                    // Handled explicitly rather than relying on PreviewTextInput: WPF's TextInput
+                    // pipeline for RichTextBox does not reliably raise TextInput for the space
+                    // character in all focus/composition states, which was silently swallowing
+                    // spaces before they ever reached the shell.
+                    _tab.Session.Write(" ");
                     e.Handled = true;
                     return;
 
