@@ -92,8 +92,8 @@ namespace RtlTerminal.Controls
             visualCol = Math.Clamp(visualCol, 0, Buffer.Columns - 1);
             row = Math.Clamp(row, 0, Buffer.Rows - 1);
 
-            bool rtl = IsRowRtl(row);
-            int logicalCol = rtl ? (Buffer.Columns - 1 - visualCol) : visualCol;
+            var (_, visualToLogical) = GetBidiMappings(row);
+            int logicalCol = (visualToLogical is not null && visualCol < visualToLogical.Length) ? visualToLogical[visualCol] : visualCol;
             return (row, logicalCol);
         }
 
@@ -104,6 +104,109 @@ namespace RtlTerminal.Controls
             for (int x = 0; x < Buffer.Columns; x++)
                 rowText.Append(Buffer.Grid[row, x].Ch);
             return RtlTextHelper.DetectFlowDirection(rowText.ToString().TrimEnd()) == FlowDirection.RightToLeft;
+        }
+
+        private (int[] logicalToVisual, int[] visualToLogical) GetBidiMappings(int row)
+        {
+            if (Buffer is null)
+            {
+                int[] empty = Array.Empty<int>();
+                return (empty, empty);
+            }
+
+            int columns = Buffer.Columns;
+            Cell[] rowCells = new Cell[columns];
+            for (int x = 0; x < columns; x++)
+                rowCells[x] = Buffer.Grid[row, x];
+
+            bool isRtlLine = IsRowRtl(row);
+
+            int[] logicalToVisual = new int[columns];
+            int[] visualToLogical = new int[columns];
+
+            var runs = new System.Collections.Generic.List<BidiRun>();
+            if (columns > 0)
+            {
+                bool currentIsRtl = RtlTextHelper.IsStrongRtl(rowCells[0].Ch);
+                int runStart = 0;
+                for (int i = 1; i < columns; i++)
+                {
+                    bool isRtl = RtlTextHelper.IsStrongRtl(rowCells[i].Ch);
+                    if (isRtl != currentIsRtl)
+                    {
+                        runs.Add(new BidiRun { Start = runStart, Length = i - runStart, IsRtl = currentIsRtl });
+                        runStart = i;
+                        currentIsRtl = isRtl;
+                    }
+                }
+                runs.Add(new BidiRun { Start = runStart, Length = columns - runStart, IsRtl = currentIsRtl });
+            }
+
+            if (isRtlLine)
+            {
+                int visualCursor = columns - 1;
+                foreach (var run in runs)
+                {
+                    if (run.IsRtl)
+                    {
+                        for (int i = 0; i < run.Length; i++)
+                        {
+                            int logicalX = run.Start + i;
+                            int visualX = visualCursor - i;
+                            logicalToVisual[logicalX] = visualX;
+                            visualToLogical[visualX] = logicalX;
+                        }
+                    }
+                    else
+                    {
+                        for (int i = 0; i < run.Length; i++)
+                        {
+                            int logicalX = run.Start + i;
+                            int visualX = (visualCursor - run.Length + 1) + i;
+                            logicalToVisual[logicalX] = visualX;
+                            visualToLogical[visualX] = logicalX;
+                        }
+                    }
+                    visualCursor -= run.Length;
+                }
+            }
+            else
+            {
+                int visualCursor = 0;
+                foreach (var run in runs)
+                {
+                    if (run.IsRtl)
+                    {
+                        for (int i = 0; i < run.Length; i++)
+                        {
+                            int logicalX = run.Start + i;
+                            int visualX = (visualCursor + run.Length - 1) - i;
+                            logicalToVisual[logicalX] = visualX;
+                            visualToLogical[visualX] = logicalX;
+                        }
+                    }
+                    else
+                    {
+                        for (int i = 0; i < run.Length; i++)
+                        {
+                            int logicalX = run.Start + i;
+                            int visualX = visualCursor + i;
+                            logicalToVisual[logicalX] = visualX;
+                            visualToLogical[visualX] = logicalX;
+                        }
+                    }
+                    visualCursor += run.Length;
+                }
+            }
+
+            return (logicalToVisual, visualToLogical);
+        }
+
+        private struct BidiRun
+        {
+            public int Start;
+            public int Length;
+            public bool IsRtl;
         }
 
         public void StartSelection((int Row, int Col) cell)
@@ -131,7 +234,7 @@ namespace RtlTerminal.Controls
         /// <summary>Extracts the plain text currently covered by the selection, in reading order.</summary>
         public string GetSelectedText()
         {
-            if (Buffer is null || SelectionAnchor is null || SelectionEnd is null) return string.Empty;
+            if (Buffer is null || SelectionAnchor is null || SelectionEnd is null) return string.Empty;  
 
             var (startRow, startCol, endRow, endCol) = NormalizeSelection();
 
@@ -169,9 +272,10 @@ namespace RtlTerminal.Controls
             if (row == endRow && col > endCol) return false;
             return true;
         }
+
         protected override void OnRender(DrawingContext dc)
         {
-            dc.DrawRectangle(DefaultBackground, null, new Rect(0, 0, ActualWidth, ActualHeight));
+            dc.DrawRectangle(DefaultBackground, null, new Rect(0, 0, ActualWidth, ActualHeight));        
 
             if (Buffer is null) return;
 
@@ -184,8 +288,21 @@ namespace RtlTerminal.Controls
 
             if (Buffer.CursorVisible && _caretBlinkOn)
             {
-                double cx = Buffer.CursorX * CellWidth;
-                double cy = Buffer.CursorY * CellHeight;
+                int cy_row = Buffer.CursorY;
+                int cx_logical = Buffer.CursorX;
+                
+                int cx_visual = cx_logical;
+                if (cy_row >= 0 && cy_row < Buffer.Rows && cx_logical >= 0 && cx_logical < Buffer.Columns)
+                {
+                    var (logicalToVisual, _) = GetBidiMappings(cy_row);
+                    if (logicalToVisual is not null && cx_logical < logicalToVisual.Length)
+                    {
+                        cx_visual = logicalToVisual[cx_logical];
+                    }
+                }
+
+                double cx = cx_visual * CellWidth;
+                double cy = cy_row * CellHeight;
                 var caretBrush = new SolidColorBrush(Color.FromArgb(120, 232, 232, 232));
                 dc.DrawRectangle(caretBrush, null, new Rect(cx, cy, CellWidth, CellHeight));
             }
@@ -195,23 +312,15 @@ namespace RtlTerminal.Controls
         {
             if (Buffer is null) return;
 
-            var rowText = new StringBuilder(Buffer.Columns);
-            for (int x = 0; x < Buffer.Columns; x++)
-                rowText.Append(Buffer.Grid[row, x].Ch);
-
-            string lineText = rowText.ToString();
-            FlowDirection direction = RtlTextHelper.DetectFlowDirection(lineText.TrimEnd());
-            bool rtl = direction == FlowDirection.RightToLeft;
+            var (logicalToVisual, _) = GetBidiMappings(row);
 
             // Draw cell-by-cell so each cell keeps its own color/bold/reverse attributes.
-            // For RTL rows, mirror the column order so the visual result reads right-to-left
-            // while each character stays upright (real terminal-style bidi approximation).
             for (int x = 0; x < Buffer.Columns; x++)
             {
                 Cell cell = Buffer.Grid[row, x];
                 if (cell.Ch == '\0') cell.Ch = ' ';
 
-                int visualX = rtl ? (Buffer.Columns - 1 - x) : x;
+                int visualX = (logicalToVisual is not null && x < logicalToVisual.Length) ? logicalToVisual[x] : x;
 
                 Brush fg = ResolveBrush(cell.Fg, DefaultForeground);
                 Brush? bg = cell.Bg == AnsiColor.Default ? null : ResolveBrush(cell.Bg, DefaultBackground);
@@ -225,7 +334,7 @@ namespace RtlTerminal.Controls
                 if (IsCellSelected(row, x))
                 {
                     var selectionBrush = new SolidColorBrush(Color.FromArgb(90, 90, 150, 220));
-                    dc.DrawRectangle(selectionBrush, null, new Rect(px, py, CellWidth, CellHeight));
+                    dc.DrawRectangle(selectionBrush, null, new Rect(px, py, CellWidth, CellHeight));     
                 }
 
                 if (cell.Ch != ' ')

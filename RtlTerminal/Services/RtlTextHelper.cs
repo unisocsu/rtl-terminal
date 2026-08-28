@@ -31,7 +31,7 @@ namespace RtlTerminal.Services
             return FlowDirection.LeftToRight;
         }
 
-        private static bool IsStrongRtl(char c)
+        public static bool IsStrongRtl(char c)
         {
             // Hebrew: U+0590–U+05FF, Hebrew presentation forms: U+FB1D–U+FB4F
             // Arabic: U+0600–U+06FF, U+0750–U+077F, Arabic presentation forms: U+FB50–U+FDFF, U+FE70–U+FEFF
@@ -43,7 +43,7 @@ namespace RtlTerminal.Services
                    (c >= '\uFE70' && c <= '\uFEFF');
         }
 
-        private static bool IsStrongLtr(char c)
+        public static bool IsStrongLtr(char c)
         {
             return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
         }
