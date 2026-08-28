@@ -146,7 +146,17 @@ namespace RtlTerminal.Controls
                     return;
 
                 case Key.C when Keyboard.Modifiers == ModifierKeys.Control:
-                    _tab.Session.Write("\x03"); // Ctrl+C -> SIGINT-equivalent
+                    if (Canvas.HasSelection)
+                    {
+                        string selected = Canvas.GetSelectedText();
+                        if (!string.IsNullOrEmpty(selected))
+                            Clipboard.SetText(selected);
+                        Canvas.ClearSelection();
+                    }
+                    else
+                    {
+                        _tab.Session.Write("\x03"); // Ctrl+C -> SIGINT-equivalent
+                    }
                     e.Handled = true;
                     return;
 
@@ -163,7 +173,53 @@ namespace RtlTerminal.Controls
         protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
         {
             Focus();
+            Canvas.ClearSelection();
+            var cell = Canvas.HitTestCell(e.GetPosition(Canvas));
+            Canvas.StartSelection(cell);
+            CaptureMouse();
+            e.Handled = true;
             base.OnMouseLeftButtonDown(e);
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            if (e.LeftButton == MouseButtonState.Pressed && IsMouseCaptured)
+            {
+                var cell = Canvas.HitTestCell(e.GetPosition(Canvas));
+                Canvas.UpdateSelection(cell);
+            }
+            base.OnMouseMove(e);
+        }
+
+        protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
+        {
+            if (IsMouseCaptured) ReleaseMouseCapture();
+
+            // A click with no drag (anchor == end) is not a meaningful selection - clear it
+            // so it doesn't block normal typing/interrupt behavior.
+            if (Canvas.SelectionAnchor == Canvas.SelectionEnd)
+                Canvas.ClearSelection();
+
+            base.OnMouseLeftButtonUp(e);
+        }
+
+        protected override void OnMouseRightButtonDown(MouseButtonEventArgs e)
+        {
+            // Right-click: standard terminal convenience - copy selection if present,
+            // otherwise paste clipboard contents.
+            if (Canvas.HasSelection)
+            {
+                string selected = Canvas.GetSelectedText();
+                if (!string.IsNullOrEmpty(selected))
+                    Clipboard.SetText(selected);
+                Canvas.ClearSelection();
+            }
+            else if (_tab is not null && Clipboard.ContainsText())
+            {
+                _tab.Session.Write(Clipboard.GetText());
+            }
+            e.Handled = true;
+            base.OnMouseRightButtonDown(e);
         }
 
         // ---- resize ------------------------------------------------------------------

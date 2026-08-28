@@ -18,6 +18,11 @@ namespace RtlTerminal.Controls
     {
         public TerminalBuffer? Buffer { get; private set; }
 
+        public (int Row, int Col)? SelectionAnchor { get; private set; }
+        public (int Row, int Col)? SelectionEnd { get; private set; }
+
+        public bool HasSelection => SelectionAnchor is not null && SelectionEnd is not null;
+
         private readonly Typeface _typeface = new(new FontFamily("Cascadia Mono, Consolas, Courier New"),
             FontStyles.Normal, FontWeights.Normal, FontStretches.Normal);
         private readonly Typeface _boldTypeface = new(new FontFamily("Cascadia Mono, Consolas, Courier New"),
@@ -77,6 +82,93 @@ namespace RtlTerminal.Controls
             return (cols, rows);
         }
 
+        /// <summary>Converts a pixel position within the canvas to a (row, col) cell, clamped to the buffer bounds.
+        /// Accounts for RTL row mirroring (see RenderRow) so selection lines up with what's drawn.</summary>
+        public (int Row, int Col) HitTestCell(Point p)
+        {
+            if (Buffer is null) return (0, 0);
+            int visualCol = (int)(p.X / CellWidth);
+            int row = (int)(p.Y / CellHeight);
+            visualCol = Math.Clamp(visualCol, 0, Buffer.Columns - 1);
+            row = Math.Clamp(row, 0, Buffer.Rows - 1);
+
+            bool rtl = IsRowRtl(row);
+            int logicalCol = rtl ? (Buffer.Columns - 1 - visualCol) : visualCol;
+            return (row, logicalCol);
+        }
+
+        private bool IsRowRtl(int row)
+        {
+            if (Buffer is null) return false;
+            var rowText = new StringBuilder(Buffer.Columns);
+            for (int x = 0; x < Buffer.Columns; x++)
+                rowText.Append(Buffer.Grid[row, x].Ch);
+            return RtlTextHelper.DetectFlowDirection(rowText.ToString().TrimEnd()) == FlowDirection.RightToLeft;
+        }
+
+        public void StartSelection((int Row, int Col) cell)
+        {
+            SelectionAnchor = cell;
+            SelectionEnd = cell;
+            InvalidateVisual();
+        }
+
+        public void UpdateSelection((int Row, int Col) cell)
+        {
+            if (SelectionAnchor is null) return;
+            SelectionEnd = cell;
+            InvalidateVisual();
+        }
+
+        public void ClearSelection()
+        {
+            if (SelectionAnchor is null && SelectionEnd is null) return;
+            SelectionAnchor = null;
+            SelectionEnd = null;
+            InvalidateVisual();
+        }
+
+        /// <summary>Extracts the plain text currently covered by the selection, in reading order.</summary>
+        public string GetSelectedText()
+        {
+            if (Buffer is null || SelectionAnchor is null || SelectionEnd is null) return string.Empty;
+
+            var (startRow, startCol, endRow, endCol) = NormalizeSelection();
+
+            var sb = new StringBuilder();
+            for (int row = startRow; row <= endRow; row++)
+            {
+                int fromCol = row == startRow ? startCol : 0;
+                int toCol = row == endRow ? endCol : Buffer.Columns - 1;
+
+                var lineBuilder = new StringBuilder();
+                for (int col = fromCol; col <= toCol && col < Buffer.Columns; col++)
+                    lineBuilder.Append(Buffer.Grid[row, col].Ch);
+
+                sb.Append(lineBuilder.ToString().TrimEnd());
+                if (row < endRow) sb.Append(Environment.NewLine);
+            }
+            return sb.ToString();
+        }
+
+        private (int startRow, int startCol, int endRow, int endCol) NormalizeSelection()
+        {
+            var a = SelectionAnchor!.Value;
+            var b = SelectionEnd!.Value;
+            if (a.Row < b.Row || (a.Row == b.Row && a.Col <= b.Col))
+                return (a.Row, a.Col, b.Row, b.Col);
+            return (b.Row, b.Col, a.Row, a.Col);
+        }
+
+        private bool IsCellSelected(int row, int col)
+        {
+            if (!HasSelection) return false;
+            var (startRow, startCol, endRow, endCol) = NormalizeSelection();
+            if (row < startRow || row > endRow) return false;
+            if (row == startRow && col < startCol) return false;
+            if (row == endRow && col > endCol) return false;
+            return true;
+        }
         protected override void OnRender(DrawingContext dc)
         {
             dc.DrawRectangle(DefaultBackground, null, new Rect(0, 0, ActualWidth, ActualHeight));
@@ -129,6 +221,12 @@ namespace RtlTerminal.Controls
 
                 if (bg is not null)
                     dc.DrawRectangle(bg, null, new Rect(px, py, CellWidth, CellHeight));
+
+                if (IsCellSelected(row, x))
+                {
+                    var selectionBrush = new SolidColorBrush(Color.FromArgb(90, 90, 150, 220));
+                    dc.DrawRectangle(selectionBrush, null, new Rect(px, py, CellWidth, CellHeight));
+                }
 
                 if (cell.Ch != ' ')
                 {
