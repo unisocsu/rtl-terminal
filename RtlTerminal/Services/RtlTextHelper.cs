@@ -15,6 +15,10 @@ namespace RtlTerminal.Services
         {
             foreach (char c in line)
             {
+                // Skip whitespace
+                if (char.IsWhiteSpace(c))
+                    continue;
+
                 if (IsStrongRtl(c))
                     return FlowDirection.RightToLeft;
 
@@ -22,15 +26,15 @@ namespace RtlTerminal.Services
                     return FlowDirection.LeftToRight;
             }
 
-            // No strong directional character found (numbers/punctuation/whitespace only) -
+            // No strong directional character found (numbers/punctuation/only whitespace) -
             // default to LTR, which is the safer default for a terminal prompt.
             return FlowDirection.LeftToRight;
         }
 
         private static bool IsStrongRtl(char c)
         {
-            // Hebrew: U+0590â€“U+05FF, Hebrew presentation forms: U+FB1Dâ€“U+FB4F
-            // Arabic: U+0600â€“U+06FF, U+0750â€“U+077F, Arabic presentation forms: U+FB50â€“U+FDFF, U+FE70â€“U+FEFF
+            // Hebrew: U+0590–U+05FF, Hebrew presentation forms: U+FB1D–U+FB4F
+            // Arabic: U+0600–U+06FF, U+0750–U+077F, Arabic presentation forms: U+FB50–U+FDFF, U+FE70–U+FEFF
             return (c >= '\u0590' && c <= '\u05FF') ||
                    (c >= '\uFB1D' && c <= '\uFB4F') ||
                    (c >= '\u0600' && c <= '\u06FF') ||
