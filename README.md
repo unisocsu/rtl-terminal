@@ -18,35 +18,36 @@ RtlTerminal/
 ├── Services/
 │   ├── ShellPathResolver.cs       # שליפת נתיב ה-shell מהרישום
 │   ├── ConPtySession.cs           # עטיפת ConPTY (P/Invoke)
-│   ├── AnsiSequenceStripper.cs    # ניקוי בסיסי של קודי ANSI/VT
 │   └── RtlTextHelper.cs           # זיהוי כיווניות טקסט לכל שורה
+├── Terminal/
+│   ├── TerminalBuffer.cs          # מסך תווים אמיתי: grid, סמן, גלילה, צבעים (SGR)
+│   └── VtParser.cs                # state machine שמפרש ANSI/VT ומפעיל שינויים על ה-buffer
 ├── Models/
-│   └── TerminalTab.cs
+│   └── TerminalTab.cs             # מחזיק Session + Buffer לכל כרטיסייה
 └── Controls/
-    └── TerminalView.xaml/.cs      # תצוגת פלט + העברת מקלדת ל-stdin
+    ├── TerminalCanvas.cs          # ציור ישיר של ה-grid (FrameworkElement.OnRender) + סמן מהבהב
+    └── TerminalView.xaml/.cs      # מארח את ה-Canvas, מזין לו פלט, מעביר מקלדת ל-stdin
 ```
+
+### איך זה עובד עכשיו (v2 - "מסוף אמיתי")
+
+בגרסה הקודמת כל פלט פשוט הצטרף לסוף טקסט (append-only), ולכן כל דבר שדרש "לצייר מחדש שורה" (מחיקת תו, redraw של CLI כמו Claude Code) לא עבד נכון. עכשיו:
+
+1. `ConPtySession` מייצר בייטים גולמיים מה-shell.
+2. `TerminalView` מפענח אותם ל-UTF-8 (עם `Decoder` שמחזיק מצב בין קריאות, כדי לא לשבור תווים רב-בייטיים שנחתכים בין chunks).
+3. `VtParser` "קורא" את התווים תו-תו, ומפרש: תזוזות סמן (`CUU/CUD/CUF/CUB`), מיקום סמן (`CUP`), מחיקת שורה/מסך (`EL`/`ED`), צבעים ועיצוב (`SGR`), הצג/הסתר סמן (`DECTCEM`), אזור גלילה (`DECSTBM`).
+4. כל פעולה כזו **משנה בפועל** את ה-`TerminalBuffer` — grid של `Cell` (שורה × עמודה), כמו שכל טרמינל אמיתי עובד.
+5. `TerminalCanvas` מצייר את ה-grid ישירות עם `DrawingContext`, כולל זיהוי RTL לכל שורה (שורה שזוהתה כעברית/ערבית מוצגת "מראה" ומיושרת לימין).
 
 ## בנייה
 
-הבנייה מתבצעת ב-GitHub Actions (`.github/workflows/build.yml`) על `windows-latest`, כי הפרויקט משתמש ב-Windows API-ים (P/Invoke ל-`kernel32.dll`) שלא רלוונטיים/זמינים בסביבת לינוקס.
+הבנייה מתבצעת ב-GitHub Actions (`.github/workflows/build.yml`) על `windows-latest`.
 
 הפלט: exe עצמאי (`self-contained`, `PublishSingleFile`) שמועלה כ-artifact בשם `RtlTerminal-win-x64`.
 
-להרצה מקומית (על מחשב Windows עם .NET 8 SDK):
+## מגבלות ידועות (v2)
 
-```powershell
-dotnet build RtlTerminal/RtlTerminal.csproj -c Release
-```
-
-## מגבלות ידועות (v1)
-
-- **רינדור ANSI בסיסי בלבד** — כרגע `AnsiSequenceStripper` רק **מסיר** קודי צבע/עמדת-סמן במקום לפרש אותם. פלט צבעוני (כמו `git status` או `ls` עם צבעים) יוצג כטקסט רגיל ללא צבע. שדרוג עתידי: state machine מלא ל-VT100/xterm.
-- **זיהוי RTL הוא היוריסטי**, לא אלגוריתם Unicode Bidi מלא — מספיק לרוב פלטי המסוף (נתיבים בעברית, טקסט מעורב שורה-שורה), אבל לא לטקסט דו-כיווני בתוך אותה שורה עם מבנה מורכב.
-- אין עדיין תמיכה ב-PowerShell/פרופילים בתוך ה-UI (אבל `ShellPathResolver.ResolvePowerShell()` / `TryResolvePwsh()` כבר קיימים לשימוש עתידי).
-- זהו סקאפולד ראשוני שלא קומפל באופן מקומי (הסביבה שיצרה את הקוד היא לינוקס ללא .NET SDK/NuGet) — יכול להיות שיהיו שגיאות build קטנות בסבב הראשון של ה-Actions. אם כן — תעתיקי/תעתיק את הלוג ונתקן.
-
-## רעיונות להמשך
-
-- פירוש CSI/SGR אמיתי (צבעים, bold) במקום strip.
-- תמיכה בבחירת shell מתוך תפריט (cmd / PowerShell / pwsh) לכל כרטיסייה חדשה.
-- שמירת היסטוריית פקודות / scrollback buffer עם חיפוש.
+- **אין alternate screen buffer** (`?1049h/l`) — אפליקציות full-screen (כמו `vim`/`htop`) שמשתמשות במסך חלופי יצטיירו על אותו buffer ראשי; זה עלול להיראות לא נכון אחרי שיוצאים מהן. שדרוג עתידי: buffer שני + מיתוג.
+- **256/true-color לא נתמכים עדיין** — רק 16 הצבעים הבסיסיים של ANSI (`ApplySgr` ב-`TerminalBuffer`). קודי `38;5;n`/`38;2;r;g;b` יתעלמו כרגע.
+- **זיהוי RTL הוא היוריסטי** לכל שורה שלמה, לא אלגוריתם Unicode Bidi מלא ברמת התו — מספיק לרוב הפלט (נתיבים בעברית, טקסט מעורב שורה-שורה), לא לערבוב RTL/LTR מורכב באותה שורה.
+- לא נבדק מקומית (הסביבה שיצרה את הקוד היא לינוקס ללא .NET SDK) — יתכנו שגיאות build קטנות בסבב ראשון של Actions.

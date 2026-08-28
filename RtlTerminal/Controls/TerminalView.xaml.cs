@@ -2,23 +2,22 @@ using System;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Documents;
 using System.Windows.Input;
 using RtlTerminal.Models;
-using RtlTerminal.Services;
+using RtlTerminal.Terminal;
 
 namespace RtlTerminal.Controls
 {
     /// <summary>
-    /// Renders one terminal tab: shows ConPTY output (with per-line RTL/LTR auto-detection)
-    /// and forwards raw keystrokes to the shell's stdin, so the shell itself (cmd.exe,
-    /// PowerShell, ...) drives the actual interactive behavior - this control is just the
-    /// screen + keyboard.
+    /// Hosts one terminal tab's screen: feeds ConPTY output through a VtParser into a
+    /// TerminalBuffer, which TerminalCanvas draws as a real character grid, and forwards
+    /// raw keystrokes to the shell's stdin.
     /// </summary>
     public partial class TerminalView : UserControl
     {
         private TerminalTab? _tab;
-        private readonly StringBuilder _pendingLine = new();
+        private VtParser? _parser;
+        private readonly Decoder _utf8Decoder = Encoding.UTF8.GetDecoder();
 
         public TerminalView()
         {
@@ -27,9 +26,11 @@ namespace RtlTerminal.Controls
         }
 
         /// <summary>Attaches this view to a running tab's session. Call once, after Session.Start().</summary>
-        public void Attach(TerminalTab tab)
+        public void Attach(TerminalTab tab, TerminalBuffer buffer)
         {
             _tab = tab;
+            _parser = new VtParser(buffer);
+            Canvas.AttachBuffer(buffer);
             _tab.Session.OutputReceived += OnOutputReceived;
             _tab.Session.ProcessExited += OnProcessExited;
         }
@@ -45,112 +46,38 @@ namespace RtlTerminal.Controls
 
         private void OnOutputReceived(byte[] buffer, int count)
         {
-            string chunk = Encoding.UTF8.GetString(buffer, 0, count);
+            // Decode incrementally: a multi-byte UTF-8 character can be split across two
+            // separate ConPTY read chunks, and a persistent Decoder correctly carries the
+            // partial bytes over to the next call instead of corrupting the character.
+            int maxChars = _utf8Decoder.GetCharCount(buffer, 0, count);
+            char[] chars = new char[maxChars];
+            int charCount = _utf8Decoder.GetChars(buffer, 0, count, chars, 0);
+            string text = new string(chars, 0, charCount);
 
-            Dispatcher.BeginInvoke(new Action(() => AppendChunk(chunk)));
-        }
-
-        private void AppendChunk(string rawChunk)
-        {
-            string clean = AnsiSequenceStripper.Strip(rawChunk);
-            _pendingLine.Append(clean);
-
-            string combined = _pendingLine.ToString();
-            string[] parts = combined.Split('\n');
-
-            // Everything except the last part is a complete line.
-            for (int i = 0; i < parts.Length - 1; i++)
-            {
-                AppendLine(parts[i]);
-            }
-
-            // Keep the incomplete trailing part (no newline yet, e.g. an active prompt) buffered.
-            _pendingLine.Clear();
-            _pendingLine.Append(parts[^1]);
-
-            // Also reflect the in-progress prompt line live, without committing it as a final paragraph.
-            RefreshLivePromptLine(parts[^1]);
-
-            OutputBox.ScrollToEnd();
-        }
-
-        private Paragraph? _livePromptParagraph;
-
-        private void AppendLine(string line)
-        {
-            // Remove the live (uncommitted) prompt paragraph before adding the finalized line.
-            if (_livePromptParagraph is not null)
-            {
-                OutputBox.Document.Blocks.Remove(_livePromptParagraph);
-                _livePromptParagraph = null;
-            }
-
-            var paragraph = new Paragraph(new Run(line))
-            {
-                Margin = new Thickness(0),
-                FlowDirection = RtlTextHelper.DetectFlowDirection(line)
-            };
-            OutputBox.Document.Blocks.Add(paragraph);
-        }
-
-        private void RefreshLivePromptLine(string line)
-        {
-            if (_livePromptParagraph is not null)
-                OutputBox.Document.Blocks.Remove(_livePromptParagraph);
-
-            if (string.IsNullOrEmpty(line))
-            {
-                _livePromptParagraph = null;
-                return;
-            }
-
-            _livePromptParagraph = new Paragraph(new Run(line))
-            {
-                Margin = new Thickness(0),
-                FlowDirection = RtlTextHelper.DetectFlowDirection(line)
-            };
-            OutputBox.Document.Blocks.Add(_livePromptParagraph);
-
-            // Move caret to end so the view keeps following the live line.
-            OutputBox.CaretPosition = OutputBox.Document.ContentEnd;
+            _parser?.Feed(text);
         }
 
         private void OnProcessExited(int exitCode)
         {
-            Dispatcher.BeginInvoke(new Action(() =>
-            {
-                AppendLine($"[התהליך הסתיים, קוד יציאה: {exitCode}]");
-            }));
+            // The buffer itself has no "text log" concept anymore; exit is surfaced via the tab title
+            // (see MainWindow) rather than printed into the grid.
         }
 
         // ---- input (keyboard -> shell stdin) --------------------------------------------
 
-        private void OutputBox_PreviewTextInput(object sender, TextCompositionEventArgs e)
+        protected override void OnPreviewTextInput(TextCompositionEventArgs e)
         {
-            // Every printable character typed goes straight to the shell; the shell's own
-            // echo (coming back through OutputReceived) is what actually renders it on screen,
-            // so we must NOT let the RichTextBox insert it itself.
             if (_tab is not null && !string.IsNullOrEmpty(e.Text))
             {
                 _tab.Session.Write(e.Text);
             }
             e.Handled = true;
+            base.OnPreviewTextInput(e);
         }
 
-        private void OutputBox_PreviewCanExecute(object sender, CanExecuteRoutedEventArgs e)
+        protected override void OnPreviewKeyDown(KeyEventArgs e)
         {
-            // Block built-in editing commands (paste/cut handled manually below, undo/redo disabled)
-            // so the RichTextBox never mutates its own document except through our code.
-            if (e.Command == ApplicationCommands.Undo || e.Command == ApplicationCommands.Redo)
-            {
-                e.CanExecute = false;
-                e.Handled = true;
-            }
-        }
-
-        private void OutputBox_PreviewKeyDown(object sender, KeyEventArgs e)
-        {
-            if (_tab is null) return;
+            if (_tab is null) { base.OnPreviewKeyDown(e); return; }
 
             switch (e.Key)
             {
@@ -160,27 +87,20 @@ namespace RtlTerminal.Controls
                     return;
 
                 case Key.Back when Keyboard.Modifiers == ModifierKeys.Control:
-                    // Ctrl+Backspace = delete word left. Ctrl+W (0x17) is the standard single-byte
-                    // "unix-word-rubout" binding recognized by bash, zsh, PSReadLine and Node's
-                    // readline (which Claude Code uses) - more consistently supported than an
-                    // ESC+DEL combo.
+                    // Ctrl+W (0x17) - standard "unix-word-rubout" binding recognized by bash, zsh,
+                    // PSReadLine and Node's readline (used by Claude Code).
                     _tab.Session.Write("\x17");
                     e.Handled = true;
                     return;
 
                 case Key.Back:
-                    // BS (0x08), not DEL (0x7f): cmd.exe / conhost's native line editor expects the
-                    // Windows-native backspace byte. DEL is the Unix/xterm convention and was simply
-                    // not recognized as "erase" here - same root cause as the Space bug.
+                    // BS (0x08): cmd.exe / conhost's native line editor expects the Windows-native
+                    // backspace byte, not DEL (0x7f, the Unix/xterm convention).
                     _tab.Session.Write("\b");
                     e.Handled = true;
                     return;
 
                 case Key.Space:
-                    // Handled explicitly rather than relying on PreviewTextInput: WPF's TextInput
-                    // pipeline for RichTextBox does not reliably raise TextInput for the space
-                    // character in all focus/composition states, which was silently swallowing
-                    // spaces before they ever reached the shell.
                     _tab.Session.Write(" ");
                     e.Handled = true;
                     return;
@@ -207,6 +127,19 @@ namespace RtlTerminal.Controls
                     e.Handled = true;
                     return;
 
+                case Key.Delete:
+                    _tab.Session.Write("\u001b[3~");
+                    e.Handled = true;
+                    return;
+                case Key.Home:
+                    _tab.Session.Write("\u001b[H");
+                    e.Handled = true;
+                    return;
+                case Key.End:
+                    _tab.Session.Write("\u001b[F");
+                    e.Handled = true;
+                    return;
+
                 case Key.Escape:
                     _tab.Session.Write("\u001b");
                     e.Handled = true;
@@ -223,12 +156,25 @@ namespace RtlTerminal.Controls
                     e.Handled = true;
                     return;
             }
+
+            base.OnPreviewKeyDown(e);
         }
 
-        /// <summary>Call when the hosting layout changes size, to resize the underlying ConPTY buffer.</summary>
-        public void NotifyResize(short columns, short rows)
+        protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
         {
-            _tab?.Session.Resize(columns, rows);
+            Focus();
+            base.OnMouseLeftButtonDown(e);
+        }
+
+        // ---- resize ------------------------------------------------------------------
+
+        private void TerminalView_SizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            if (_tab is null || ActualWidth <= 0 || ActualHeight <= 0) return;
+
+            var (cols, rows) = Canvas.ComputeGridSize(ActualWidth, ActualHeight);
+            _tab.Session.Resize((short)cols, (short)rows);
+            Canvas.Buffer?.Resize(cols, rows);
         }
     }
 }

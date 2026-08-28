@@ -60,7 +60,7 @@ namespace RtlTerminal
             }
 
             var view = new TerminalView();
-            view.Attach(tab);
+            view.Attach(tab, tab.Buffer);
             _views[tab.Id] = view;
 
             Tabs.Add(tab);

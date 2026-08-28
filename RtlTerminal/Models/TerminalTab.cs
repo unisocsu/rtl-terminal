@@ -2,13 +2,14 @@ using System;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using RtlTerminal.Services;
+using RtlTerminal.Terminal;
 
 namespace RtlTerminal.Models
 {
     /// <summary>
-    /// Represents a single terminal tab: its own shell process/ConPTY session and title.
-    /// The actual rendered text buffer lives in the paired TerminalView control (Controls/TerminalView),
-    /// this model just owns the process lifetime and identity for the tab strip.
+    /// Represents a single terminal tab: its own shell process/ConPTY session, screen buffer,
+    /// and title. TerminalView (the visual control) renders Buffer and forwards keystrokes to
+    /// Session; this model owns their lifetime and identity for the tab strip.
     /// </summary>
     public sealed class TerminalTab : INotifyPropertyChanged, IDisposable
     {
@@ -17,6 +18,8 @@ namespace RtlTerminal.Models
         public Guid Id { get; } = Guid.NewGuid();
 
         public ConPtySession Session { get; }
+
+        public TerminalBuffer Buffer { get; private set; } = null!;
 
         public string ShellPath { get; }
 
@@ -48,6 +51,7 @@ namespace RtlTerminal.Models
 
         public void Start(short columns, short rows, string? workingDirectory = null)
         {
+            Buffer = new TerminalBuffer(columns, rows);
             Session.Start(ShellPath, arguments: null, columns: columns, rows: rows, workingDirectory: workingDirectory);
         }
 
