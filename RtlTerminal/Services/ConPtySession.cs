@@ -224,6 +224,44 @@ namespace RtlTerminal.Services
                 ThrowLastWin32("CreateProcess");
         }
 
+        /// <summary>
+        /// When true, every raw chunk read from the shell is appended to
+        /// %TEMP%\RtlTerminal-debug.log as both hex and an escaped-text view (control/escape
+        /// characters shown as \xNN so CSI/OSC sequences are readable). Off by default - turn on
+        /// by setting the environment variable RTLTERMINAL_DEBUG=1 before launching the app, to
+        /// capture the exact bytes involved in a repro instead of guessing at what a CLI sent.
+        /// </summary>
+        public static bool DebugLoggingEnabled { get; set; } =
+            Environment.GetEnvironmentVariable("RTLTERMINAL_DEBUG") == "1";
+
+        private static readonly string DebugLogPath =
+            Path.Combine(Path.GetTempPath(), "RtlTerminal-debug.log");
+
+        private static readonly object DebugLogLock = new();
+
+        private static void LogDebugChunk(byte[] buffer, int count)
+        {
+            if (!DebugLoggingEnabled) return;
+            try
+            {
+                string hex = BitConverter.ToString(buffer, 0, count);
+                string escaped = System.Text.Encoding.UTF8.GetString(buffer, 0, count);
+                var sb = new System.Text.StringBuilder();
+                foreach (char c in escaped)
+                {
+                    if (c < 0x20 || c == 0x7F) sb.Append($"\\x{(int)c:X2}");
+                    else sb.Append(c);
+                }
+
+                lock (DebugLogLock)
+                {
+                    File.AppendAllText(DebugLogPath,
+                        $"[{DateTime.Now:HH:mm:ss.fff}] ({count} bytes)\n  HEX: {hex}\n  TXT: {sb}\n\n");
+                }
+            }
+            catch { /* logging must never crash the terminal */ }
+        }
+
         private async Task ReadLoopAsync(CancellationToken token)
         {
             if (_readStream is null) return;
@@ -236,6 +274,7 @@ namespace RtlTerminal.Services
                     if (read <= 0)
                         break; // pipe closed -> process likely exited
 
+                    LogDebugChunk(buffer, read);
                     OutputReceived?.Invoke(buffer, read);
                 }
             }
@@ -268,11 +307,26 @@ namespace RtlTerminal.Services
             if (_writeStream is null || _disposed) return;
             try
             {
+                if (DebugLoggingEnabled) LogDebugWrite(data);
                 _writeStream.Write(data, 0, data.Length);
                 _writeStream.Flush();
             }
             catch (IOException) { /* shell may have exited */ }
             catch (ObjectDisposedException) { }
+        }
+
+        private static void LogDebugWrite(byte[] data)
+        {
+            try
+            {
+                string hex = BitConverter.ToString(data);
+                lock (DebugLogLock)
+                {
+                    File.AppendAllText(DebugLogPath,
+                        $"[{DateTime.Now:HH:mm:ss.fff}] SENT ({data.Length} bytes): {hex}\n\n");
+                }
+            }
+            catch { }
         }
 
         public void Write(string text) => Write(System.Text.Encoding.UTF8.GetBytes(text));

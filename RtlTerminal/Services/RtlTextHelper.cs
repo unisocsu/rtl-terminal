@@ -23,17 +23,15 @@ namespace RtlTerminal.Services
     {
         public static FlowDirection DetectFlowDirection(string line)
         {
+            // Deliberately NOT "first strong character wins": a line can start with an English
+            // word and contain Hebrew later (e.g. an English flag before a Hebrew path), and it
+            // still needs to be treated as an RTL-base line so the Hebrew run gets mirrored
+            // correctly. Any RTL character anywhere in the line makes the whole line RTL-base.
             foreach (char c in line)
             {
                 if (IsStrongRtl(c))
                     return FlowDirection.RightToLeft;
-
-                if (IsStrongLtr(c))
-                    return FlowDirection.LeftToRight;
             }
-
-            // No strong directional character found (numbers/punctuation/whitespace only) -
-            // default to LTR, which is the safer default for a terminal prompt.
             return FlowDirection.LeftToRight;
         }
 
