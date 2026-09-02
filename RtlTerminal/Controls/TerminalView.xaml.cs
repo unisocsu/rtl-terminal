@@ -91,6 +91,48 @@ namespace RtlTerminal.Controls
             base.OnPreviewTextInput(e);
         }
 
+        // ---- Win32-Input-Mode -----------------------------------------------------------
+        //
+        // Confirmed via debug log: conhost sends "CSI ? 9001 h" at startup, which requests
+        // Win32-Input-Mode - a Windows/ConPTY-specific protocol where non-printable/special
+        // keys (Backspace, Enter, arrows, Tab, Ctrl+letter, ...) are expected as a structured
+        // sequence carrying the actual Win32 virtual-key code and control-key-state, rather
+        // than a plain control byte. Plain printable characters (letters/digits/symbols via
+        // OnPreviewTextInput above) are unambiguous either way and don't need this - which
+        // matches what was observed: typed letters worked fine, but Backspace (a control key)
+        // did not. Format (documented by Microsoft): CSI Vk;Sc;Uc;Kd;Cs;Rc _
+        // (Vk=virtual key code, Sc=scan code, Uc=unicode char code, Kd=key down 1/0,
+        // Cs=control-key-state bitmask, Rc=repeat count; terminated by a literal '_').
+
+        private const int LEFT_CTRL_PRESSED = 0x0008;
+
+        private const int VK_BACK = 0x08;
+        private const int VK_TAB = 0x09;
+        private const int VK_RETURN = 0x0D;
+        private const int VK_ESCAPE = 0x1B;
+        private const int VK_SPACE = 0x20;
+        private const int VK_END = 0x23;
+        private const int VK_HOME = 0x24;
+        private const int VK_LEFT = 0x25;
+        private const int VK_UP = 0x26;
+        private const int VK_RIGHT = 0x27;
+        private const int VK_DOWN = 0x28;
+        private const int VK_DELETE = 0x2E;
+        private const int VK_C = 0x43;
+        private const int VK_W = 0x57;
+
+        private static string EncodeWin32Key(int vk, int unicodeChar, bool keyDown, int controlKeyState = 0)
+            => $"\u001b[{vk};0;{unicodeChar};{(keyDown ? 1 : 0)};{controlKeyState};1_";
+
+        /// <summary>Sends a full key-down + key-up pair, matching how a real keyboard event
+        /// arrives - some Win32-Input-Mode consumers key off the up event too.</summary>
+        private void SendWin32Key(int vk, int unicodeChar, int controlKeyState = 0)
+        {
+            if (_tab is null) return;
+            _tab.Session.Write(EncodeWin32Key(vk, unicodeChar, keyDown: true, controlKeyState)
+                              + EncodeWin32Key(vk, unicodeChar, keyDown: false, controlKeyState));
+        }
+
         protected override void OnPreviewKeyDown(KeyEventArgs e)
         {
             if (_tab is null) { base.OnPreviewKeyDown(e); return; }
@@ -98,66 +140,65 @@ namespace RtlTerminal.Controls
             switch (e.Key)
             {
                 case Key.Enter:
-                    _tab.Session.Write("\r");
+                    SendWin32Key(VK_RETURN, '\r');
                     e.Handled = true;
                     return;
 
                 case Key.Back when Keyboard.Modifiers == ModifierKeys.Control:
-                    // Ctrl+W (0x17) - standard "unix-word-rubout" binding recognized by bash, zsh,
-                    // PSReadLine and Node's readline (used by Claude Code).
-                    _tab.Session.Write("\x17");
+                    // Ctrl+Backspace = delete word left (Ctrl+W is bash/zsh/PSReadLine/Node
+                    // readline's "unix-word-rubout"; encoded here as Ctrl+W with LEFT_CTRL_PRESSED
+                    // so conhost's Win32-Input-Mode parser sees the actual control-key state).
+                    SendWin32Key(VK_W, 0x17, LEFT_CTRL_PRESSED);
                     e.Handled = true;
                     return;
 
                 case Key.Back:
-                    // BS (0x08): cmd.exe / conhost's native line editor expects the Windows-native
-                    // backspace byte, not DEL (0x7f, the Unix/xterm convention).
-                    _tab.Session.Write("\b");
+                    SendWin32Key(VK_BACK, 0x08);
                     e.Handled = true;
                     return;
 
                 case Key.Space:
-                    _tab.Session.Write(" ");
+                    SendWin32Key(VK_SPACE, ' ');
                     e.Handled = true;
                     return;
 
                 case Key.Tab:
-                    _tab.Session.Write("\t");
+                    SendWin32Key(VK_TAB, '\t');
                     e.Handled = true;
                     return;
 
                 case Key.Up:
-                    _tab.Session.Write("\u001b[A");
+                    SendWin32Key(VK_UP, 0);
                     e.Handled = true;
                     return;
                 case Key.Down:
-                    _tab.Session.Write("\u001b[B");
+                    SendWin32Key(VK_DOWN, 0);
                     e.Handled = true;
                     return;
                 case Key.Right:
-                    _tab.Session.Write("\u001b[C");
+                    SendWin32Key(VK_RIGHT, 0);
                     e.Handled = true;
                     return;
                 case Key.Left:
-                    _tab.Session.Write("\u001b[D");
+                    SendWin32Key(VK_LEFT, 0);
                     e.Handled = true;
                     return;
 
                 case Key.Delete:
-                    _tab.Session.Write("\u001b[3~");
+                    SendWin32Key(VK_DELETE, 0);
                     e.Handled = true;
                     return;
                 case Key.Home:
-                    _tab.Session.Write("\u001b[H");
+                    SendWin32Key(VK_HOME, 0);
                     e.Handled = true;
                     return;
                 case Key.End:
-                    _tab.Session.Write("\u001b[F");
+                    SendWin32Key(VK_END, 0);
                     e.Handled = true;
                     return;
 
                 case Key.Escape:
-                    _tab.Session.Write("\u001b");
+                    SendWin32Key(VK_ESCAPE, 0x1B);
                     e.Handled = true;
                     return;
 
@@ -171,7 +212,7 @@ namespace RtlTerminal.Controls
                     }
                     else
                     {
-                        _tab.Session.Write("\x03"); // Ctrl+C -> SIGINT-equivalent
+                        SendWin32Key(VK_C, 0x03, LEFT_CTRL_PRESSED); // Ctrl+C -> SIGINT-equivalent
                     }
                     e.Handled = true;
                     return;
