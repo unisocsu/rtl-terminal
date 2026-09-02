@@ -133,7 +133,17 @@ namespace RtlTerminal.Terminal
                     _paramBuffer.Clear();
                     _state = State.Csi;
                     return;
-                case ']':
+                case ']': // OSC - Operating System Command
+                case 'P': // DCS - Device Control String
+                case '_': // APC - Application Program Command
+                case '^': // PM - Privacy Message
+                case 'X': // SOS - Start Of String
+                    // All of these are "string" sequences terminated by BEL or ST (ESC \\), same
+                    // as OSC. Previously only ']' was recognized here; any other introducer fell
+                    // through to the default case below, which reset to Ground and let the
+                    // sequence's payload bytes fall through as literal printable characters -
+                    // getting written directly onto the screen at the cursor position (which is
+                    // wherever the user was typing). Swallowing them here instead prevents that.
                     _state = State.Osc;
                     return;
                 case '7': // DECSC save cursor
