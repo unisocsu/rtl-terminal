@@ -37,8 +37,70 @@ jobs:
           -p:TieredPGO=true
           -o publish
 
-      - name: Upload build artifact
+      # Artifact #1: "debug" - the raw self-contained publish folder, unpacked.
+      # This is what existed until now: every runtime file exposed, useful for troubleshooting
+      # (e.g. checking exact DLLs, running from a console to see startup errors, etc.).
+      - name: Upload debug artifact (raw publish folder)
         uses: actions/upload-artifact@v4
         with:
-          name: RtlTerminal-win-x64
+          name: RtlTerminal-debug
           path: publish/**
+
+      # Artifact #2: a proper Windows installer (Inno Setup) - installs to Program Files,
+      # adds a Start Menu shortcut, and registers an uninstaller in "Add or remove programs",
+      # like any normal Windows application. Inno Setup is installed via Chocolatey so this
+      # works reliably regardless of what's preinstalled on the runner image.
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Generate Inno Setup script
+        shell: pwsh
+        run: |
+          $iss = @'
+          #define MyAppName "RTL Terminal"
+          #define MyAppExeName "RtlTerminal.exe"
+
+          [Setup]
+          AppId={{6F3F0F1E-6B1B-4B7B-9A9A-1234567890AB}}
+          AppName={#MyAppName}
+          AppVersion=1.0.${{ github.run_number }}
+          DefaultDirName={autopf}\{#MyAppName}
+          DefaultGroupName={#MyAppName}
+          DisableProgramGroupPage=yes
+          OutputDir=installer_output
+          OutputBaseFilename=RtlTerminal-Setup
+          Compression=lzma2
+          SolidCompression=yes
+          ArchitecturesAllowed=x64
+          ArchitecturesInstallIn64BitMode=x64
+          UninstallDisplayIcon={app}\{#MyAppExeName}
+
+          [Languages]
+          Name: "english"; MessagesFile: "compiler:Default.isl"
+
+          [Files]
+          Source: "publish\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+
+          [Icons]
+          Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+          Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
+          Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
+
+          [Run]
+          Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+          '@
+          New-Item -ItemType Directory -Force -Path installer_output | Out-Null
+          Set-Content -Path installer.iss -Value $iss -Encoding UTF8
+
+      - name: Compile installer
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
+        shell: pwsh
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RtlTerminal-Installer
+          path: installer_output/RtlTerminal-Setup.exe
