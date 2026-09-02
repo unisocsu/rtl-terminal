@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace RtlTerminal.Terminal
 {
@@ -51,6 +52,20 @@ namespace RtlTerminal.Terminal
         private int _savedCursorX, _savedCursorY;
 
         public event Action? Changed;
+
+        /// <summary>Raised when whole-screen scrolling pushes lines off the top into scrollback,
+        /// with the count of lines pushed. Lets a scrolled-up viewport shift by the same amount
+        /// so it keeps showing the same historical content instead of jumping.</summary>
+        public event Action<int>? ScrolledOut;
+
+        private const int MaxScrollbackLines = 5000;
+        private readonly List<Cell[]> _scrollback = new();
+
+        public int ScrollbackCount => _scrollback.Count;
+
+        /// <summary>0 = oldest retained line. Returns a blank line if the buffer has been resized
+        /// to a different width since this line was captured (rare edge case, not preserved).</summary>
+        public Cell[] GetScrollbackLine(int index) => _scrollback[index];
 
         public TerminalBuffer(int columns, int rows)
         {
@@ -181,8 +196,21 @@ namespace RtlTerminal.Terminal
 
         public void ScrollUp(int n)
         {
+            // Only capture scrollback when the WHOLE screen scrolls (the common case for a plain
+            // shell prompt). An app-defined partial scroll region (e.g. a status bar pinned at
+            // the top) is more like internal windowing than something you'd want in history.
+            bool capturesScrollback = _scrollTop == 0;
+
             for (int s = 0; s < n; s++)
             {
+                if (capturesScrollback)
+                {
+                    var line = new Cell[Columns];
+                    for (int x = 0; x < Columns; x++) line[x] = Grid[0, x];
+                    _scrollback.Add(line);
+                    if (_scrollback.Count > MaxScrollbackLines) _scrollback.RemoveAt(0);
+                }
+
                 for (int y = _scrollTop; y < _scrollBottom; y++)
                     for (int x = 0; x < Columns; x++)
                         Grid[y, x] = Grid[y + 1, x];
@@ -190,6 +218,8 @@ namespace RtlTerminal.Terminal
                 for (int x = 0; x < Columns; x++)
                     Grid[_scrollBottom, x] = Cell.Blank;
             }
+
+            if (capturesScrollback && n > 0) ScrolledOut?.Invoke(n);
             RaiseChanged();
         }
 

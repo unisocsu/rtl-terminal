@@ -23,6 +23,16 @@ namespace RtlTerminal.Controls
 
         public bool HasSelection => SelectionAnchor is not null && SelectionEnd is not null;
 
+        /// <summary>0 = live (following the shell's current output). Larger values look further
+        /// back into scrollback history.</summary>
+        public int ScrollOffset { get; private set; }
+
+        public int MaxScrollOffset => Buffer?.ScrollbackCount ?? 0;
+
+        /// <summary>Raised whenever ScrollOffset changes, so the hosting view can keep an
+        /// external scrollbar in sync.</summary>
+        public event Action? ScrollOffsetChanged;
+
         private readonly Typeface _typeface = new(new FontFamily("Cascadia Mono, Consolas, Courier New"),
             FontStyles.Normal, FontWeights.Normal, FontStretches.Normal);
         private readonly Typeface _boldTypeface = new(new FontFamily("Cascadia Mono, Consolas, Courier New"),
@@ -54,10 +64,67 @@ namespace RtlTerminal.Controls
 
         public void AttachBuffer(TerminalBuffer buffer)
         {
-            if (Buffer is not null) Buffer.Changed -= OnBufferChanged;
+            if (Buffer is not null)
+            {
+                Buffer.Changed -= OnBufferChanged;
+                Buffer.ScrolledOut -= OnScrolledOut;
+            }
             Buffer = buffer;
             Buffer.Changed += OnBufferChanged;
+            Buffer.ScrolledOut += OnScrolledOut;
+            ScrollOffset = 0;
             InvalidateVisual();
+        }
+
+        private void OnScrolledOut(int linesScrolled)
+        {
+            // Already on the UI thread: ScrollUp is only ever called from VtParser.Feed, which
+            // is itself dispatched onto the UI thread (see TerminalView.OnOutputReceived).
+            if (ScrollOffset > 0)
+            {
+                SetScrollOffset(ScrollOffset + linesScrolled); // also raises ScrollOffsetChanged
+            }
+            else
+            {
+                // Offset itself didn't move, but ScrollbackCount (and so MaxScrollOffset) grew -
+                // let the hosting view refresh its scrollbar's range even though the value is
+                // unchanged.
+                ScrollOffsetChanged?.Invoke();
+            }
+        }
+
+        /// <summary>Moves the viewport. 0 = live/bottom. Clamped to available scrollback.</summary>
+        public void SetScrollOffset(int offset)
+        {
+            if (Buffer is null) return;
+            int clamped = Math.Clamp(offset, 0, Buffer.ScrollbackCount);
+            if (clamped == ScrollOffset) return;
+            ScrollOffset = clamped;
+            ScrollOffsetChanged?.Invoke();
+            InvalidateVisual();
+        }
+
+        /// <summary>Returns the cell that should be shown at the given screen row/col, accounting
+        /// for ScrollOffset - transparently reading from scrollback history or the live grid.</summary>
+        private Cell GetDisplayCell(int screenRow, int col)
+        {
+            if (Buffer is null) return Cell.Blank;
+
+            int totalLines = Buffer.ScrollbackCount + Buffer.Rows;
+            int topLineIndex = totalLines - Buffer.Rows - ScrollOffset;
+            int lineIndex = topLineIndex + screenRow;
+
+            if (lineIndex < 0) return Cell.Blank;
+
+            if (lineIndex < Buffer.ScrollbackCount)
+            {
+                Cell[] line = Buffer.GetScrollbackLine(lineIndex);
+                return col < line.Length ? line[col] : Cell.Blank;
+            }
+
+            int liveRow = lineIndex - Buffer.ScrollbackCount;
+            if (liveRow < 0 || liveRow >= Buffer.Rows) return Cell.Blank;
+            return Buffer.Grid[liveRow, col];
         }
 
         private void OnBufferChanged()
@@ -110,7 +177,7 @@ namespace RtlTerminal.Controls
             if (Buffer is null) return string.Empty;
             var sb = new StringBuilder(Buffer.Columns);
             for (int x = 0; x < Buffer.Columns; x++)
-                sb.Append(Buffer.Grid[row, x].Ch);
+                sb.Append(GetDisplayCell(row, x).Ch);
             return sb.ToString();
         }
 
@@ -151,7 +218,7 @@ namespace RtlTerminal.Controls
 
                 var lineBuilder = new StringBuilder();
                 for (int col = fromCol; col <= toCol && col < Buffer.Columns; col++)
-                    lineBuilder.Append(Buffer.Grid[row, col].Ch);
+                    lineBuilder.Append(GetDisplayCell(row, col).Ch);
 
                 sb.Append(lineBuilder.ToString().TrimEnd());
                 if (row < endRow) sb.Append(Environment.NewLine);
@@ -190,7 +257,7 @@ namespace RtlTerminal.Controls
                 RenderRow(dc, y, dpi);
             }
 
-            if (Buffer.CursorVisible && _caretBlinkOn)
+            if (ScrollOffset == 0 && Buffer.CursorVisible && _caretBlinkOn)
             {
                 double cx = Buffer.CursorX * CellWidth;
                 double cy = Buffer.CursorY * CellHeight;
@@ -215,7 +282,7 @@ namespace RtlTerminal.Controls
             // the letters within the English word.
             for (int x = 0; x < Buffer.Columns; x++)
             {
-                Cell cell = Buffer.Grid[row, x];
+                Cell cell = GetDisplayCell(row, x);
                 if (cell.Ch == '\0') cell.Ch = ' ';
 
                 int visualX = logicalToVisual[x];

@@ -23,6 +23,7 @@ namespace RtlTerminal.Controls
         {
             InitializeComponent();
             Loaded += (_, _) => Focus();
+            Canvas.ScrollOffsetChanged += SyncScrollBarFromCanvas;
         }
 
         /// <summary>Attaches this view to a running tab's session. Call once, after Session.Start().</summary>
@@ -32,6 +33,7 @@ namespace RtlTerminal.Controls
             _parser = new VtParser(buffer);
             _parser.ActiveBufferChanged += OnActiveBufferChanged;
             Canvas.AttachBuffer(buffer);
+            SyncScrollBarFromCanvas();
             _tab.Session.OutputReceived += OnOutputReceived;
             _tab.Session.ProcessExited += OnProcessExited;
         }
@@ -49,6 +51,46 @@ namespace RtlTerminal.Controls
             // Already runs on the UI thread (only ever raised from within Feed(), which is
             // itself dispatched onto the UI thread - see OnOutputReceived).
             Canvas.AttachBuffer(newActive);
+            SyncScrollBarFromCanvas();
+        }
+
+        // ---- scrolling -----------------------------------------------------------------
+
+        private bool _syncingScrollBar;
+
+        private void SyncScrollBarFromCanvas()
+        {
+            // ScrollBar convention: Value=0 is the top (oldest), Value=Maximum is the bottom
+            // (live) - the opposite sense from Canvas.ScrollOffset (0 = live). Guard against
+            // feedback: setting VScrollBar.Value below fires Scroll, which would otherwise
+            // call back into SetScrollOffset for a change we already made ourselves.
+            _syncingScrollBar = true;
+            VScrollBar.Maximum = Canvas.MaxScrollOffset;
+            VScrollBar.ViewportSize = Math.Max(1, Canvas.MaxScrollOffset / 10.0);
+            VScrollBar.Value = Canvas.MaxScrollOffset - Canvas.ScrollOffset;
+            _syncingScrollBar = false;
+        }
+
+        private void VScrollBar_Scroll(object sender, System.Windows.Controls.Primitives.ScrollEventArgs e)
+        {
+            if (_syncingScrollBar) return;
+            Canvas.SetScrollOffset((int)(VScrollBar.Maximum - VScrollBar.Value));
+        }
+
+        protected override void OnMouseWheel(MouseWheelEventArgs e)
+        {
+            const int linesPerNotch = 3;
+            int notches = e.Delta / 120; // WPF reports +/-120 per standard wheel notch
+            Canvas.SetScrollOffset(Canvas.ScrollOffset + notches * linesPerNotch);
+            e.Handled = true;
+            base.OnMouseWheel(e);
+        }
+
+        /// <summary>Any keystroke jumps the view back to live output, matching how real
+        /// terminals behave - you shouldn't be scrolled into history while typing blind.</summary>
+        private void JumpToLiveOnInput()
+        {
+            if (Canvas.ScrollOffset != 0) Canvas.SetScrollOffset(0);
         }
 
         // ---- output (shell -> screen) --------------------------------------------------
@@ -83,6 +125,7 @@ namespace RtlTerminal.Controls
 
         protected override void OnPreviewTextInput(TextCompositionEventArgs e)
         {
+            JumpToLiveOnInput();
             if (_tab is not null && !string.IsNullOrEmpty(e.Text))
             {
                 _tab.Session.Write(e.Text);
@@ -136,6 +179,7 @@ namespace RtlTerminal.Controls
         protected override void OnPreviewKeyDown(KeyEventArgs e)
         {
             if (_tab is null) { base.OnPreviewKeyDown(e); return; }
+            JumpToLiveOnInput();
 
             switch (e.Key)
             {

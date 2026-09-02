@@ -10,6 +10,17 @@
              SizeChanged="TerminalView_SizeChanged"
              d:DesignHeight="450" d:DesignWidth="800">
     <Grid Background="{StaticResource TerminalBackground}">
-        <controls:TerminalCanvas x:Name="Canvas"/>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+
+        <controls:TerminalCanvas x:Name="Canvas" Grid.Column="0"/>
+
+        <ScrollBar x:Name="VScrollBar" Grid.Column="1"
+                   Orientation="Vertical"
+                   SmallChange="1" LargeChange="10"
+                   Minimum="0"
+                   Scroll="VScrollBar_Scroll"/>
     </Grid>
 </UserControl>
