@@ -30,6 +30,7 @@ namespace RtlTerminal.Controls
         {
             _tab = tab;
             _parser = new VtParser(buffer);
+            _parser.ActiveBufferChanged += OnActiveBufferChanged;
             Canvas.AttachBuffer(buffer);
             _tab.Session.OutputReceived += OnOutputReceived;
             _tab.Session.ProcessExited += OnProcessExited;
@@ -40,6 +41,14 @@ namespace RtlTerminal.Controls
             if (_tab is null) return;
             _tab.Session.OutputReceived -= OnOutputReceived;
             _tab.Session.ProcessExited -= OnProcessExited;
+            if (_parser is not null) _parser.ActiveBufferChanged -= OnActiveBufferChanged;
+        }
+
+        private void OnActiveBufferChanged(TerminalBuffer newActive)
+        {
+            // Already runs on the UI thread (only ever raised from within Feed(), which is
+            // itself dispatched onto the UI thread - see OnOutputReceived).
+            Canvas.AttachBuffer(newActive);
         }
 
         // ---- output (shell -> screen) --------------------------------------------------
@@ -54,7 +63,14 @@ namespace RtlTerminal.Controls
             int charCount = _utf8Decoder.GetChars(buffer, 0, count, chars, 0);
             string text = new string(chars, 0, charCount);
 
-            _parser?.Feed(text);
+            // OutputReceived fires on the ConPTY background read thread. Parsing mutates
+            // TerminalBuffer's grid directly, and TerminalCanvas reads that same grid on the UI
+            // thread during rendering - doing both without marshaling onto one thread is a real
+            // race (can produce torn/half-updated frames, which looks exactly like random
+            // corruption). Dispatcher.BeginInvoke calls are processed in the order they're
+            // queued, and this loop only ever has one outstanding read at a time, so chunk order
+            // is preserved even though each one is now handled asynchronously on the UI thread.
+            Dispatcher.BeginInvoke(new Action(() => _parser?.Feed(text)));
         }
 
         private void OnProcessExited(int exitCode)
@@ -230,7 +246,7 @@ namespace RtlTerminal.Controls
 
             var (cols, rows) = Canvas.ComputeGridSize(ActualWidth, ActualHeight);
             _tab.Session.Resize((short)cols, (short)rows);
-            Canvas.Buffer?.Resize(cols, rows);
+            _parser?.Resize(cols, rows);
         }
     }
 }

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Text;
 
@@ -10,7 +11,16 @@ namespace RtlTerminal.Terminal
     ///
     /// Covers: cursor movement (CUU/CUD/CUF/CUB/CUP/HVP), erase in line/display (EL/ED),
     /// SGR colors/bold/underline/reverse, cursor show/hide (DECTCEM), save/restore cursor,
-    /// scroll region (DECSTBM), and the common single-byte controls (BS, HT, LF, CR).
+    /// scroll region (DECSTBM), the common single-byte controls (BS, HT, LF, CR), and the
+    /// alternate screen buffer (?47/?1047/?1049 h/l).
+    ///
+    /// Alternate screen buffer matters more than it might look: full-screen TUI apps (like an
+    /// Ink-based CLI) assume their absolute cursor addressing (CUP) stays valid relative to a
+    /// FIXED top-of-screen for their whole session. If their content is drawn into the same
+    /// buffer as normal scrollback and a line-feed at the bottom row ever triggers a scroll,
+    /// every row index the app assumes becomes wrong from that point on - which looks exactly
+    /// like "an unrelated line got erased" days after the actual desync happened. Giving such
+    /// apps their own isolated buffer (swapped back out when they exit) avoids that entirely.
     /// OSC sequences (window title, etc.) are recognized and skipped rather than leaking into
     /// the visible buffer.
     /// </summary>
@@ -20,11 +30,30 @@ namespace RtlTerminal.Terminal
 
         private State _state = State.Ground;
         private readonly StringBuilder _paramBuffer = new();
-        private readonly TerminalBuffer _buffer;
+
+        private readonly TerminalBuffer _mainBuffer;
+        private TerminalBuffer? _altBuffer;
+        private TerminalBuffer _active;
+
+        /// <summary>Raised whenever the active buffer changes (entering/leaving the alternate
+        /// screen). The view should re-attach its canvas to the new active buffer.</summary>
+        public event Action<TerminalBuffer>? ActiveBufferChanged;
+
+        public TerminalBuffer ActiveBuffer => _active;
 
         public VtParser(TerminalBuffer buffer)
         {
-            _buffer = buffer;
+            _mainBuffer = buffer;
+            _active = buffer;
+        }
+
+        /// <summary>Call when the terminal is resized, so both the main and (if present) the
+        /// alternate buffer stay the same size - otherwise switching back to a stale-sized
+        /// buffer would misrender.</summary>
+        public void Resize(int columns, int rows)
+        {
+            _mainBuffer.Resize(columns, rows);
+            _altBuffer?.Resize(columns, rows);
         }
 
         public void Feed(string text)
@@ -76,22 +105,22 @@ namespace RtlTerminal.Terminal
                     _state = State.Escape;
                     return;
                 case '\r':
-                    _buffer.CarriageReturn();
+                    _active.CarriageReturn();
                     return;
                 case '\n':
-                    _buffer.LineFeed();
+                    _active.LineFeed();
                     return;
                 case '\b':
-                    _buffer.Backspace();
+                    _active.Backspace();
                     return;
                 case '\t':
-                    _buffer.Tab();
+                    _active.Tab();
                     return;
                 case '\u0007': // BEL
                     return;
                 default:
                     if (c >= 0x20) // printable
-                        _buffer.WriteChar(c);
+                        _active.WriteChar(c);
                     return;
             }
         }
@@ -108,15 +137,15 @@ namespace RtlTerminal.Terminal
                     _state = State.Osc;
                     return;
                 case '7': // DECSC save cursor
-                    _buffer.SaveCursor();
+                    _active.SaveCursor();
                     _state = State.Ground;
                     return;
                 case '8': // DECRC restore cursor
-                    _buffer.RestoreCursor();
+                    _active.RestoreCursor();
                     _state = State.Ground;
                     return;
                 case 'M': // reverse index (scroll down) - approximate as cursor up
-                    _buffer.MoveCursorUp(1);
+                    _active.MoveCursorUp(1);
                     _state = State.Ground;
                     return;
                 default:
@@ -144,70 +173,118 @@ namespace RtlTerminal.Terminal
             string cleanParams = isPrivate ? paramText[1..] : paramText;
             List<int> ps = ParseParams(cleanParams);
 
-            int P(int index, int def = 0) => index < ps.Count && ps[index] > 0 ? ps[index] : (index < ps.Count ? def : def);
             int PDef1(int index) => index < ps.Count && ps[index] > 0 ? ps[index] : 1;
 
             switch (final)
             {
-                case 'A': _buffer.MoveCursorUp(PDef1(0)); break;
-                case 'B': _buffer.MoveCursorDown(PDef1(0)); break;
-                case 'C': _buffer.MoveCursorForward(PDef1(0)); break;
-                case 'D': _buffer.MoveCursorBack(PDef1(0)); break;
+                case 'A': _active.MoveCursorUp(PDef1(0)); break;
+                case 'B': _active.MoveCursorDown(PDef1(0)); break;
+                case 'C': _active.MoveCursorForward(PDef1(0)); break;
+                case 'D': _active.MoveCursorBack(PDef1(0)); break;
 
                 case 'H':
                 case 'f':
                     {
                         int row = ps.Count > 0 && ps[0] > 0 ? ps[0] : 1;
                         int col = ps.Count > 1 && ps[1] > 0 ? ps[1] : 1;
-                        _buffer.SetCursorPosition(row, col);
+                        _active.SetCursorPosition(row, col);
                         break;
                     }
 
                 case 'J':
-                    _buffer.EraseInDisplay(ps.Count > 0 ? ps[0] : 0);
+                    _active.EraseInDisplay(ps.Count > 0 ? ps[0] : 0);
                     break;
 
                 case 'K':
-                    _buffer.EraseInLine(ps.Count > 0 ? ps[0] : 0);
+                    _active.EraseInLine(ps.Count > 0 ? ps[0] : 0);
                     break;
 
                 case 'm':
                     if (ps.Count == 0)
                     {
-                        _buffer.ResetSgr();
+                        _active.ResetSgr();
                     }
                     else
                     {
-                        foreach (int code in ps) _buffer.ApplySgr(code);
+                        foreach (int code in ps) _active.ApplySgr(code);
                     }
                     break;
 
                 case 's':
-                    _buffer.SaveCursor();
+                    _active.SaveCursor();
                     break;
 
                 case 'u':
-                    _buffer.RestoreCursor();
+                    _active.RestoreCursor();
                     break;
 
                 case 'r':
                     {
                         int top = ps.Count > 0 && ps[0] > 0 ? ps[0] : 1;
-                        int bottom = ps.Count > 1 && ps[1] > 0 ? ps[1] : _buffer.Rows;
-                        _buffer.SetScrollRegion(top, bottom);
+                        int bottom = ps.Count > 1 && ps[1] > 0 ? ps[1] : _active.Rows;
+                        _active.SetScrollRegion(top, bottom);
                         break;
                     }
 
                 case 'h':
-                    if (isPrivate && ps.Count > 0 && ps[0] == 25) _buffer.SetCursorVisible(true);
+                    if (isPrivate) HandlePrivateMode(ps, enable: true);
                     break;
 
                 case 'l':
-                    if (isPrivate && ps.Count > 0 && ps[0] == 25) _buffer.SetCursorVisible(false);
+                    if (isPrivate) HandlePrivateMode(ps, enable: false);
                     break;
 
                 // Unsupported final bytes (device queries, etc.) are silently ignored.
             }
+        }
+
+        private void HandlePrivateMode(List<int> ps, bool enable)
+        {
+            foreach (int code in ps)
+            {
+                switch (code)
+                {
+                    case 25: // DECTCEM - cursor visibility
+                        _active.SetCursorVisible(enable);
+                        break;
+
+                    case 47:
+                    case 1047:
+                    case 1049:
+                        // Alternate screen buffer. 1049 additionally saves/restores the cursor.
+                        if (enable) SwitchToAltBuffer(saveCursor: code == 1049);
+                        else SwitchToMainBuffer(restoreCursor: code == 1049);
+                        break;
+
+                    // Other private modes (bracketed paste 2004, application cursor keys 1,
+                    // mouse reporting 1000/1002/1003/1006, etc.) aren't needed for basic
+                    // shell/CLI use and are silently ignored rather than mis-handled.
+                }
+            }
+        }
+
+        private void SwitchToAltBuffer(bool saveCursor)
+        {
+            if (ReferenceEquals(_active, _altBuffer)) return; // already in alt screen
+
+            if (saveCursor) _mainBuffer.SaveCursor();
+
+            _altBuffer ??= new TerminalBuffer(_mainBuffer.Columns, _mainBuffer.Rows);
+            if (_altBuffer.Columns != _mainBuffer.Columns || _altBuffer.Rows != _mainBuffer.Rows)
+                _altBuffer.Resize(_mainBuffer.Columns, _mainBuffer.Rows);
+
+            _altBuffer.EraseInDisplay(2); // start the alt screen blank, like a real terminal does
+            _active = _altBuffer;
+            ActiveBufferChanged?.Invoke(_active);
+        }
+
+        private void SwitchToMainBuffer(bool restoreCursor)
+        {
+            if (ReferenceEquals(_active, _mainBuffer)) return; // already on main screen
+
+            _active = _mainBuffer;
+            if (restoreCursor) _mainBuffer.RestoreCursor();
+            ActiveBufferChanged?.Invoke(_active);
         }
 
         private static List<int> ParseParams(string text)

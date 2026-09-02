@@ -26,14 +26,15 @@ jobs:
       - name: Build
         run: dotnet build RtlTerminal/RtlTerminal.csproj -c Release --no-restore
 
-      - name: Publish (self-contained single exe)
+      - name: Publish (self-contained folder, ReadyToRun)
         run: >
           dotnet publish RtlTerminal/RtlTerminal.csproj
           -c Release
           -r win-x64
           --self-contained true
-          -p:PublishSingleFile=true
-          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:PublishSingleFile=false
+          -p:PublishReadyToRun=true
+          -p:TieredPGO=true
           -o publish
 
       - name: Upload build artifact
