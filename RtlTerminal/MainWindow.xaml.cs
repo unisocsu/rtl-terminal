@@ -22,22 +22,52 @@ namespace RtlTerminal
             TabStripItems.ItemsSource = Tabs;
 
             InputBindings.Add(new KeyBinding(
-                new RelayCommand(_ => CreateTab()), Key.T, ModifierKeys.Control));
+                new RelayCommand(_ => CreateTab(defaultShell: true)), Key.T, ModifierKeys.Control));
             InputBindings.Add(new KeyBinding(
                 new RelayCommand(_ => CloseActiveTab()), Key.W, ModifierKeys.Control));
 
-            Loaded += (_, _) => CreateTab();
+            Loaded += (_, _) =>
+            {
+                CreateTab(defaultShell: true);
+                // PowerShell 7 (pwsh.exe) isn't always installed - disable that menu entry
+                // instead of offering a shell that would just fail to launch.
+                Pwsh7MenuItem.IsEnabled = ShellPathResolver.TryResolvePwsh() is not null;
+            };
             Closed += (_, _) => CleanupAll();
         }
 
-        private void NewTabButton_Click(object sender, RoutedEventArgs e) => CreateTab();
+        private void NewTabButton_Click(object sender, RoutedEventArgs e) => CreateTab(defaultShell: true);
 
-        private void CreateTab()
+        private void NewTabMenuButton_Click(object sender, RoutedEventArgs e)
+        {
+            ShellMenu.PlacementTarget = NewTabMenuButton;
+            ShellMenu.IsOpen = true;
+        }
+
+        private void ShellMenuItem_CommandPrompt(object sender, RoutedEventArgs e)
+            => CreateTabWithResolver(ShellPathResolver.ResolveCmd, "Command Prompt");
+
+        private void ShellMenuItem_WindowsPowerShell(object sender, RoutedEventArgs e)
+            => CreateTabWithResolver(ShellPathResolver.ResolvePowerShell, "Windows PowerShell");
+
+        private void ShellMenuItem_Pwsh7(object sender, RoutedEventArgs e)
+        {
+            string? path = ShellPathResolver.TryResolvePwsh();
+            if (path is null)
+            {
+                MessageBox.Show("PowerShell 7 (pwsh.exe) לא נמצא במערכת הזו.", "לא זמין",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            CreateTab(path, "PowerShell 7");
+        }
+
+        private void CreateTabWithResolver(Func<string> resolve, string title)
         {
             string shellPath;
             try
             {
-                shellPath = ShellPathResolver.ResolveCmd();
+                shellPath = resolve();
             }
             catch (Exception ex)
             {
@@ -45,8 +75,19 @@ namespace RtlTerminal
                     MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
+            CreateTab(shellPath, title);
+        }
 
-            var tab = new TerminalTab(shellPath, title: $"Terminal {Tabs.Count + 1}");
+        /// <summary>Default entry point (Ctrl+T, the "+" button): always cmd.exe.</summary>
+        private void CreateTab(bool defaultShell)
+        {
+            if (!defaultShell) return;
+            CreateTabWithResolver(ShellPathResolver.ResolveCmd, "Command Prompt");
+        }
+
+        private void CreateTab(string shellPath, string title)
+        {
+            var tab = new TerminalTab(shellPath, title: $"{title} {Tabs.Count + 1}");
             try
             {
                 tab.Start(columns: 120, rows: 30);
@@ -109,7 +150,7 @@ namespace RtlTerminal
 
             if (Tabs.Count == 0)
             {
-                CreateTab();
+                CreateTab(defaultShell: true);
                 return;
             }
 

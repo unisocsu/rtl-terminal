@@ -8,6 +8,19 @@
         Icon="Assets/app.ico"
         Background="{StaticResource TerminalBackground}"
         WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <Style x:Key="ShellMenuStyle" TargetType="ContextMenu">
+            <Setter Property="Background" Value="{StaticResource TabBarBackground}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource TabBorder}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="2"/>
+        </Style>
+        <Style TargetType="MenuItem">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Padding" Value="8,6"/>
+        </Style>
+    </Window.Resources>
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -40,7 +53,19 @@
 
             <Button x:Name="NewTabButton" Content="+" Width="32" DockPanel.Dock="Left"
                     Background="Transparent" Foreground="White" BorderThickness="0"
-                    FontSize="16" Click="NewTabButton_Click" ToolTip="כרטיסייה חדשה (Ctrl+T)"/>
+                    FontSize="16" Click="NewTabButton_Click" ToolTip="כרטיסייה חדשה (Ctrl+T) - cmd.exe"/>
+
+            <Button x:Name="NewTabMenuButton" Content="⌄" Width="22" DockPanel.Dock="Left"
+                    Background="Transparent" Foreground="White" BorderThickness="0"
+                    FontSize="12" Click="NewTabMenuButton_Click" ToolTip="בחר סוג shell">
+                <Button.ContextMenu>
+                    <ContextMenu x:Name="ShellMenu" Style="{StaticResource ShellMenuStyle}" Placement="Bottom">
+                        <MenuItem Header="Command Prompt" Click="ShellMenuItem_CommandPrompt"/>
+                        <MenuItem Header="Windows PowerShell" Click="ShellMenuItem_WindowsPowerShell"/>
+                        <MenuItem x:Name="Pwsh7MenuItem" Header="PowerShell 7" Click="ShellMenuItem_Pwsh7"/>
+                    </ContextMenu>
+                </Button.ContextMenu>
+            </Button>
         </DockPanel>
 
         <!-- Active terminal host -->
