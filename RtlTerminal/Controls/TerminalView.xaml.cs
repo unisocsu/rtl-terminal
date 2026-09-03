@@ -77,11 +77,20 @@ namespace RtlTerminal.Controls
             Canvas.SetScrollOffset((int)(VScrollBar.Maximum - VScrollBar.Value));
         }
 
+        private double _wheelAccumulator;
+
         protected override void OnMouseWheel(MouseWheelEventArgs e)
         {
-            const int linesPerNotch = 3;
-            int notches = e.Delta / 120; // WPF reports +/-120 per standard wheel notch
-            Canvas.SetScrollOffset(Canvas.ScrollOffset + notches * linesPerNotch);
+            // Was 3 lines per standard 120-delta wheel notch - felt too slow. Bumped to 8.
+            // Accumulating fractional notches (rather than truncating via integer division)
+            // also makes precision trackpads, which often send deltas smaller than 120, scroll
+            // smoothly instead of needing several flicks before anything visibly moves.
+            const double linesPerStandardNotch = 8;
+            _wheelAccumulator += e.Delta / 120.0 * linesPerStandardNotch;
+            int lines = (int)_wheelAccumulator;
+            _wheelAccumulator -= lines;
+
+            if (lines != 0) Canvas.SetScrollOffset(Canvas.ScrollOffset + lines);
             e.Handled = true;
             base.OnMouseWheel(e);
         }
