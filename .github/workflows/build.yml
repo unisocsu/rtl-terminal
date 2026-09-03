@@ -74,7 +74,7 @@ jobs:
           ArchitecturesAllowed=x64
           ArchitecturesInstallIn64BitMode=x64
           UninstallDisplayIcon={app}\{#MyAppExeName}
-          SetupIconFile=RtlTerminal\RtlTerminal\Assets\app.ico
+          SetupIconFile=RtlTerminal\Assets\app.ico
 
           [Languages]
           Name: "english"; MessagesFile: "compiler:Default.isl"
